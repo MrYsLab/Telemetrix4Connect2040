@@ -1,0 +1,44 @@
+/home/afy/clion-2019.3.2/bin/cmake/linux/bin/cmake -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_COMPILER=/usr/bin/arm-none-eabi-gcc -DCMAKE_CXX_COMPILER=/usr/bin/arm-none-eabi-g++ -DCMAKE_DEPENDS_USE_COMPILER=FALSE -G "CodeBlocks - Unix Makefiles" /home/afy/CLionProjects/Telemetrix4Connect2040
+-- The C compiler identification is GNU 9.2.1
+-- The CXX compiler identification is GNU 9.2.1
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - failed
+-- Check for working C compiler: /usr/bin/arm-none-eabi-gcc
+-- Check for working C compiler: /usr/bin/arm-none-eabi-gcc - broken
+CMake Error at /home/afy/clion-2019.3.2/bin/cmake/linux/share/cmake-3.20/Modules/CMakeTestCCompiler.cmake:66 (message):
+  The C compiler
+
+    "/usr/bin/arm-none-eabi-gcc"
+
+  is not able to compile a simple test program.
+
+  It fails with the following output:
+
+    Change Dir: /home/afy/CLionProjects/Telemetrix4Connect2040/cmake-build-debug/CMakeFiles/CMakeTmp
+    
+    Run Build Command(s):/usr/bin/gmake -f Makefile cmTC_c536d/fast && /usr/bin/gmake  -f CMakeFiles/cmTC_c536d.dir/build.make CMakeFiles/cmTC_c536d.dir/build
+    gmake[1]: Entering directory '/home/afy/CLionProjects/Telemetrix4Connect2040/cmake-build-debug/CMakeFiles/CMakeTmp'
+    Building C object CMakeFiles/cmTC_c536d.dir/testCCompiler.c.o
+    /usr/bin/arm-none-eabi-gcc    -o CMakeFiles/cmTC_c536d.dir/testCCompiler.c.o -c /home/afy/CLionProjects/Telemetrix4Connect2040/cmake-build-debug/CMakeFiles/CMakeTmp/testCCompiler.c
+    Linking C executable cmTC_c536d
+    /home/afy/clion-2019.3.2/bin/cmake/linux/bin/cmake -E cmake_link_script CMakeFiles/cmTC_c536d.dir/link.txt --verbose=1
+    /usr/bin/arm-none-eabi-gcc CMakeFiles/cmTC_c536d.dir/testCCompiler.c.o -o cmTC_c536d 
+    /usr/lib/gcc/arm-none-eabi/9.2.1/../../../arm-none-eabi/bin/ld: /usr/lib/gcc/arm-none-eabi/9.2.1/../../../arm-none-eabi/lib/libc.a(lib_a-exit.o): in function `exit':
+    /build/newlib-wFsRXh/newlib-3.3.0/build/arm-none-eabi/newlib/libc/stdlib/../../../../../newlib/libc/stdlib/exit.c:64: undefined reference to `_exit'
+    collect2: error: ld returned 1 exit status
+    gmake[1]: *** [CMakeFiles/cmTC_c536d.dir/build.make:99: cmTC_c536d] Error 1
+    gmake[1]: Leaving directory '/home/afy/CLionProjects/Telemetrix4Connect2040/cmake-build-debug/CMakeFiles/CMakeTmp'
+    gmake: *** [Makefile:127: cmTC_c536d/fast] Error 2
+    
+    
+
+  
+
+  CMake will not be able to correctly generate this project.
+Call Stack (most recent call first):
+  CMakeLists.txt:2 (project)
+
+
+-- Configuring incomplete, errors occurred!
+See also "/home/afy/CLionProjects/Telemetrix4Connect2040/cmake-build-debug/CMakeFiles/CMakeOutput.log".
+See also "/home/afy/CLionProjects/Telemetrix4Connect2040/cmake-build-debug/CMakeFiles/CMakeError.log".
