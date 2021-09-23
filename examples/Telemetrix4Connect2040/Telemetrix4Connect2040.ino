@@ -1,19 +1,19 @@
 /*
- Copyright (c) 2020-2021 Alan Yorinks All rights reserved.
+  Copyright (c) 2021 Alan Yorinks All rights reserved.
 
- This program is free software; you can redistribute it and/or
- modify it under the terms of the GNU AFFERO GENERAL PUBLIC LICENSE
- Version 3 as published by the Free Software Foundation; either
- or (at your option) any later version.
- This library is distributed in the hope that it will be useful,f
- but WITHOUT ANY WARRANTY; without even the implied warranty of
- MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- General Public License for more details.
+  This program is free software; you can redistribute it and/or
+  modify it under the terms of the GNU AFFERO GENERAL PUBLIC LICENSE
+  Version 3 as published by the Free Software Foundation; either
+  or (at your option) any later version.
+  This library is distributed in the hope that it will be useful,f
+  but WITHOUT ANY WARRANTY; without even the implied warranty of
+  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+  General Public License for more details.
 
- You should have received a copy of the GNU AFFERO GENERAL PUBLIC LICENSE
- along with this library; if not, write to the Free Software
- Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
- */
+  You should have received a copy of the GNU AFFERO GENERAL PUBLIC LICENSE
+  along with this library; if not, write to the Free Software
+  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+*/
 
 #include <Arduino.h>
 #include <WiFiNINA.h>
@@ -25,6 +25,9 @@
 #include <PDM.h>
 #include <NeoPixelConnect.h>
 #include <NanoConnectHcSr04.h>
+#include <dhtnew.h>
+#include <SPI.h>
+
 extern "C" {
 #include <hardware/watchdog.h>
 };
@@ -96,9 +99,17 @@ extern void clear_all_neo_pixels();
 
 extern void fill_neo_pixels();
 
-//void watchdog_reboot();
-//void watchdog_enable();
+extern void init_spi();
 
+extern void write_blocking_spi();
+
+extern void read_blocking_spi();
+
+extern void set_format_spi();
+
+extern void spi_cs_control();
+
+extern void dht_new();
 
 // This value must be the same as specified when instantiating the
 // telemetrix client. The client defaults to a value of 1.
@@ -136,7 +147,12 @@ extern void fill_neo_pixels();
 #define SET_NEOPIXEL 23
 #define CLEAR_NEOPIXELS 24
 #define FILL_NEOPIXELS 25
-
+#define SPI_INIT 26
+#define SPI_WRITE_BLOCKING 27
+#define SPI_READ_BLOCKING 28
+#define SPI_SET_FORMAT 29
+#define SPI_CS_CONTROL 30
+#define DHT_NEW = 31
 
 // When adding a new command update the command_table.
 // The command length is the number of bytes that follow
@@ -179,7 +195,13 @@ command_descriptor command_table[] =
                 {show_neo_pixels},
                 {set_neo_pixel},
                 {clear_all_neo_pixels},
-                {fill_neo_pixels}
+                {fill_neo_pixels},
+                {&init_spi},
+                {&write_blocking_spi},
+                {&read_blocking_spi},
+                {&set_format_spi},
+                {&spi_cs_control},
+                {&dht_new}
         };
 
 // Input pin reporting control sub commands (modify_reporting)
@@ -217,22 +239,28 @@ command_descriptor command_table[] =
 #define SONAR_DISTANCE 11
 #define IMU_REPORT 12
 #define MICROPHONE_REPORT 13
+#define DHT_REPORT 14
+#define SPI_REPORT 15
 #define DEBUG_PRINT 99
 
 // firmware version - update this when bumping the version
-#define FIRMWARE_MAJOR 2
+#define FIRMWARE_MAJOR 1
 #define FIRMWARE_MINOR 0
 #define FIRMWARE_PATCH 0
 
 // A buffer to hold i2c report data
 byte i2c_report_message[64];
 
+byte spi_report_message[64];
+
 bool stop_reports = false; // a flag to stop sending all report messages
+
+bool rebooting = false;
 
 // To translate a pin number from an integer value to its analog pin number
 // equivalent, this array is used to look up the value to use for the pin.
 int analog_read_pins[4] = {A0, A1, A2, A3};
-//NinaPin nina_analog_read_pins[4] = {A4, A5, A6, A7};
+// NinaPin nina_analog_read_pins[4] = {A4, A5, A6, A7};
 
 // a descriptor for digital pins
 struct pin_descriptor {
@@ -291,6 +319,16 @@ unsigned long sonar_previous_millis; // for analog input loop
 uint8_t sonar_scan_interval = 33;    // Milliseconds between sensor pings
 // (29ms is about the min to avoid = 19;
 
+// init dht command offsets
+#define DHT_DATA_PIN 1
+
+/* Maximum number of DHT devices */
+#define MAX_DHTS 2
+
+// DHT Report sub-types
+#define DHT_DATA 0
+#define DHT_READ_ERROR 1
+
 boolean imu_enabled = false;
 boolean imu_error = false;
 
@@ -302,6 +340,23 @@ volatile int samplesRead;
 //volatile bool get_microphone_samples = false;
 
 NeoPixelConnect *np;
+
+// DHT related
+struct DHT {
+    uint8_t pin;
+    uint8_t dht_type;
+    unsigned int last_value;
+    DHTNEW *dht_sensor;
+};
+
+// an array of dht objects]
+DHT dhts[MAX_DHTS];
+
+byte dht_index = 0; // index into dht struct
+
+unsigned long dht_current_millis;      // for analog input loop
+unsigned long dht_previous_millis;     // for analog input loop
+unsigned int dht_scan_interval = 2200; // scan dht's every 2 seconds
 
 // buffer to hold incoming command data
 byte command_buffer[MAX_COMMAND_LENGTH];
@@ -445,16 +500,19 @@ void modify_reporting() {
 }
 
 void reset_data_structures() {
+    stop_all_reports();
 
-    //stop_all_reports();
-
-    //delay(100);
-    //client.stop();
-    //delay(100);
-    watchdog_reboot(0, 0, 0);
-    watchdog_enable(10, 1);
-
-
+    delay(100);
+    if (command_buffer[0]) {
+        rebooting = true;
+        digitalWrite(LEDB, HIGH); //BLUE
+        watchdog_reboot(0, 0, 0);
+        watchdog_enable(100, 0);
+        client.stop();
+        while (1) {
+            delay(3);
+        }
+    }
     // detach any attached servos
     for (int i = 0; i < MAX_SERVOS; i++) {
         if (servos[i].attached() == true) {
@@ -465,8 +523,10 @@ void reset_data_structures() {
     sonars_index = 0; // reset the index into the sonars array
 
     memset(sonars, 0, sizeof(sonars));
-    //enable_all_reports();
 
+    dht_index = 0;
+
+    memset(dhts, 0, sizeof(dhts));
 }
 
 void get_firmware_version() {
@@ -481,7 +541,7 @@ void are_you_there() {
 }
 
 /***************************************************
- * Servo Commands
+   Servo Commands
  **************************************************/
 
 // Find the first servo that is not attached to a pin
@@ -547,82 +607,73 @@ void servo_detach() {
 }
 
 /***********************************
- * i2c functions
+   i2c functions
  **********************************/
 
-void i2c_begin()
-{
-      Wire.begin();
+void i2c_begin() {
+    Wire.begin();
 }
 
 
-void i2c_read()
-{
-  // data in the incoming message:
-  // address, [0]
-  // register, [1]
-  // number of bytes, [2]
-  // stop transmitting flag [3]
+void i2c_read() {
+    // data in the incoming message:
+    // address, [0]
+    // register, [1]
+    // number of bytes, [2]
+    // stop transmitting flag [3]
 
-  int message_size = 0;
-  byte address = command_buffer[0];
-  byte the_register = command_buffer[1];
+    int message_size = 0;
+    byte address = command_buffer[0];
+    byte the_register = command_buffer[1];
 
-  
 
-  Wire.beginTransmission(address);
-  Wire.write((byte)the_register);
-  Wire.endTransmission(command_buffer[3]);      // default = true
-  Wire.requestFrom(address, command_buffer[2]); // all bytes are returned in requestFrom
+    Wire.beginTransmission(address);
+    Wire.write((byte) the_register);
+    Wire.endTransmission(command_buffer[3]);      // default = true
+    Wire.requestFrom(address, command_buffer[2]); // all bytes are returned in requestFrom
 
-  // check to be sure correct number of bytes were returned by slave
-  if (command_buffer[2] < Wire.available())
-  {
-    byte report_message[4] = {3, I2C_TOO_FEW_BYTES_RCVD, 1, address};
-    client.write(report_message, 4);
-    return;
-  }
-  else if (command_buffer[2] > Wire.available())
-  {
-    byte report_message[4] = {3, I2C_TOO_MANY_BYTES_RCVD, 1, address};
-    client.write(report_message, 4);
-    return;
-  }
+    // check to be sure correct number of bytes were returned by slave
+    if (command_buffer[2] < Wire.available()) {
+        byte report_message[4] = {3, I2C_TOO_FEW_BYTES_RCVD, 1, address};
+        client.write(report_message, 4);
+        return;
+    } else if (command_buffer[2] > Wire.available()) {
+        byte report_message[4] = {3, I2C_TOO_MANY_BYTES_RCVD, 1, address};
+        client.write(report_message, 4);
+        return;
+    }
 
-  // packet length
-  i2c_report_message[0] = command_buffer[2] + 4;
+    // packet length
+    i2c_report_message[0] = command_buffer[2] + 4;
 
-  // report type
-  i2c_report_message[1] = I2C_READ_REPORT;
+    // report type
+    i2c_report_message[1] = I2C_READ_REPORT;
 
     // number of bytes read
-  i2c_report_message[2] = command_buffer[2]; // number of bytes
+    i2c_report_message[2] = command_buffer[2]; // number of bytes
 
-  // device address
-  i2c_report_message[3] = address;
+    // device address
+    i2c_report_message[3] = address;
 
-  // device register
-  i2c_report_message[4] = the_register;
+    // device register
+    i2c_report_message[4] = the_register;
 
-  // append the data that was read
-  for (message_size = 0; message_size < command_buffer[2] && Wire.available(); message_size++)
-  {
-    i2c_report_message[5 + message_size] = Wire.read();
-  }
-  // send slave address, register and received bytes
+    // append the data that was read
+    for (message_size = 0; message_size < command_buffer[2] && Wire.available(); message_size++) {
+        i2c_report_message[5 + message_size] = Wire.read();
+    }
+    // send slave address, register and received bytes
 
-  for (int i = 0; i < message_size + 5; i++)
-  {
-    client.write(i2c_report_message[i]);
-  }
+    for (int i = 0; i < message_size + 5; i++) {
+        client.write(i2c_report_message[i]);
+    }
 }
 
-void i2c_write()
-{
-  // command_buffer[0] is the number of bytes to send
-  // command_buffer[1] is the device address
-  // command_buffer[2] is the i2c port
-  // additional bytes to write= command_buffer[3..];
+void i2c_write() {
+    // command_buffer[0] is the number of bytes to send
+    // command_buffer[1] is the device address
+    // command_buffer[2] is the i2c port
+    // additional bytes to write= command_buffer[3..];
 
     Wire.beginTransmission(command_buffer[1]);
 
@@ -638,13 +689,12 @@ void i2c_write()
    HC-SR04 adding a new device
  **********************************/
 
-void sonar_new()
-{
-  // command_buffer[0] = trigger pin,  command_buffer[1] = echo pin
-  sonars[sonars_index].usonic = new NanoConnectHcSr04((uint8_t)command_buffer[0], (uint8_t)command_buffer[1],
-      sm=1);
-  sonars[sonars_index].trigger_pin = command_buffer[0];
-  sonars_index++;
+void sonar_new() {
+    // command_buffer[0] = trigger pin,  command_buffer[1] = echo pin
+    sonars[sonars_index].usonic = new NanoConnectHcSr04((uint8_t) command_buffer[0], (uint8_t) command_buffer[1], pio0,
+                                                        1);
+    sonars[sonars_index].trigger_pin = command_buffer[0];
+    sonars_index++;
 }
 
 void rgb_write() {
@@ -653,7 +703,7 @@ void rgb_write() {
 
 // enable or disable the IMU
 void imu_enable() {
-// command_buffer[0] = enable/disable flag (boolean)
+    // command_buffer[0] = enable/disable flag (boolean)
     if (command_buffer[0]) {
         if (!IMU.begin()) {
             imu_error = true;
@@ -687,7 +737,7 @@ void microphone_enable() {
     }
 }
 
-void init_neo_pixels(){
+void init_neo_pixels() {
     byte pin_number, num_pixels;
 
     pin_number = command_buffer[0];
@@ -696,37 +746,126 @@ void init_neo_pixels(){
     np = new NeoPixelConnect(pin_number, num_pixels);
 }
 
-void show_neo_pixels(){
+void show_neo_pixels() {
     np->neoPixelShow();
 }
 
-void set_neo_pixel(){
+void set_neo_pixel() {
 
     np->neoPixelSetValue(command_buffer[0], command_buffer[1],
-                     command_buffer[2], command_buffer[3],
-                     command_buffer[4]);
+                         command_buffer[2], command_buffer[3],
+                         command_buffer[4]);
 }
 
-void clear_all_neo_pixels(){
+void clear_all_neo_pixels() {
     np->neoPixelClear(command_buffer[0]);
 }
 
-void fill_neo_pixels(){
+void fill_neo_pixels() {
     np->neoPixelFill(command_buffer[0], command_buffer[1],
                      command_buffer[2], command_buffer[3]);
+}
+
+// initialize the SPI interface
+void init_spi() {
+
+    int cs_pin;
+
+    //Serial.print(command_buffer[1]);
+    // initialize chip select GPIO pins
+    for (int i = 0; i < command_buffer[0]; i++) {
+        cs_pin = command_buffer[1 + i];
+        // Chip select is active-low, so we'll initialise it to a driven-high state
+        pinMode(cs_pin, OUTPUT);
+        digitalWrite(cs_pin, HIGH);
+    }
+    SPI.begin();
+}
+
+// write a number of blocks to the SPI device
+void write_blocking_spi() {
+    int num_bytes = command_buffer[0];
+
+    for (int i = 0; i < num_bytes; i++) {
+        SPI.transfer(command_buffer[1 + i] );
+    }
+}
+
+// read a number of bytes from the SPI device
+void read_blocking_spi() {
+    // command_buffer[0] == number of bytes to read
+    // command_buffer[1] == read register
+
+    // spi_report_message[0] = length of message including this element
+    // spi_report_message[1] = SPI_REPORT
+    // spi_report_message[2] = register used for the read
+    // spi_report_message[3] = number of bytes returned
+    // spi_report_message[4..] = data read
+
+    // configure the report message
+    // calculate the packet length
+    spi_report_message[0] = command_buffer[0] + 3; // packet length
+    spi_report_message[1] = SPI_REPORT;
+    spi_report_message[2] = command_buffer[1]; // register
+    spi_report_message[3] = command_buffer[0]; // number of bytes read
+
+    // write the register out. OR it with 0x80 to indicate a read
+    SPI.transfer(command_buffer[1] | 0x80);
+
+    // now read the specified number of bytes and place
+    // them in the report buffer
+    for (int i = 0; i < command_buffer[0] ; i++) {
+        spi_report_message[i + 4] = SPI.transfer(0x00);
+    }
+    client.write(spi_report_message, command_buffer[0] + 4);
+}
+
+// modify the SPI format
+void set_format_spi() {
+
+#if defined(__AVR__)
+    SPISettings(command_buffer[0], command_buffer[1], command_buffer[2]);
+#else
+    BitOrder b;
+
+    if (command_buffer[1]) {
+        b = MSBFIRST;
+    } else {
+        b = LSBFIRST;
+    }
+    SPISettings(command_buffer[0], b, command_buffer[2]);
+#endif
+}
+
+// set the SPI chip select line
+void spi_cs_control() {
+    int cs_pin = command_buffer[0];
+    int cs_state = command_buffer[1];
+    digitalWrite(cs_pin, cs_state);
+}
+void dht_new() {
+    if (dht_index < MAX_DHTS) {
+        dhts[dht_index].dht_sensor = new DHTNEW(command_buffer[0]);
+
+        dhts[dht_index].pin = command_buffer[0];
+        dhts[dht_index].dht_type = command_buffer[1];
+        dht_index++;
+    }
+
 }
 
 void stop_all_reports() {
     stop_reports = true;
     delay(20);
-    Serial.flush();
+    client.flush();
 }
 
 void enable_all_reports() {
-    Serial.flush();
+    client.flush();
     stop_reports = false;
     delay(20);
 }
+
 
 void get_next_command() {
     byte command;
@@ -749,6 +888,7 @@ void get_next_command() {
 
     // get the command byte
     command = (byte) client.read();
+
 
     // uncomment the next line to see the packet length and command
     // send_debug_info(packet_length, command);
@@ -824,14 +964,13 @@ void scan_analog_inputs() {
                     // adjust pin number for the actual read
                     if (i <= 3) {
                         value = analogRead((uint8_t)(analog_read_pins[i]));
-                    }
-                    else{
-                        switch(i){
+                    } else {
+                        switch (i) {
                             case 4:
                                 value = analogRead(A4);
                                 break;
                             case 5:
-                                value = analogRead(A4);
+                                value = analogRead(A5);
                                 break;
                             case 6:
                                 value = analogRead(A6);
@@ -862,6 +1001,88 @@ void scan_analog_inputs() {
 
 }
 
+void scan_dhts() {
+    // prebuild report for valid data
+    // reuse the report if a read command fails
+
+    // data returned is in floating point form - 4 bytes
+    // each for humidity and temperature
+
+    // byte 0 = packet length
+    // byte 1 = report type
+    // byte 2 = report sub type - DHT_DATA or DHT_ERROR
+    // byte 3 = pin number
+    // byte 4 = humidity positivity flag 0=positive, 1= negative
+    // byte 5 = temperature positivity flag 0=positive, 1= negative
+    // byte 6 = humidity integer portion
+    // byte 7 = humidity fractional portion
+    // byte 8 = temperature integer portion
+    // byte 9= temperature fractional portion
+
+    byte report_message[10] = {9, DHT_REPORT, DHT_DATA, 0, 0, 0, 0, 0, 0, 0};
+
+    int rv;
+
+    float humidity, temperature;
+
+    // are there any dhts to read?
+    if (dht_index) {
+        // is it time to do the read? This should occur every 2 seconds
+        dht_current_millis = millis();
+        if (dht_current_millis - dht_previous_millis > dht_scan_interval) {
+            // update for the next scan
+            dht_previous_millis = dht_current_millis;
+
+            // read and report all the dht sensors
+            for (int i = 0; i < dht_index; i++) {
+                //report_message[0] = 9; //message length
+                report_message[1] = DHT_REPORT;
+                // error type in report_message[2] will be set further down
+                report_message[3] = dhts[i].pin;
+
+                rv = dhts[i].dht_sensor->read();
+
+                if (rv != DHTLIB_OK) {
+                    rv = 0xff;
+                }
+                report_message[2] = (uint8_t) rv;
+
+                // if rv is not zero, this is an error report
+                if (rv) {
+                    client.write(report_message, 10);
+                    return;
+                } else {
+                    float j, f;
+                    float humidity = dhts[i].dht_sensor->getHumidity();
+                    if (humidity >= 0.0) {
+                        report_message[4] = 0;
+                    } else {
+                        report_message[4] = 1;
+                    }
+                    f = modff(humidity, &j);
+                    report_message[6] = (uint8_t) j;
+                    report_message[7] = (uint8_t)(f * 100);
+
+
+                    float temperature = dhts[i].dht_sensor->getTemperature();
+                    if (temperature >= 0.0) {
+                        report_message[5] = 0;
+                    } else {
+                        report_message[5] = 1;
+                    }
+
+                    f = modff(temperature, &j);
+
+                    report_message[8] = (uint8_t) j;
+                    report_message[9] = (uint8_t)(f * 100);
+                    client.write(report_message, 10);
+
+                }
+            }
+        }
+    }
+}
+
 void scan_sonars() {
     float distance;
     float j, f;
@@ -884,10 +1105,11 @@ void scan_sonars() {
 
                     f = modff(distance, &j);
 
-                    integ = (uint8_t)j;
-                    frac = (uint8_t)f;
+                    integ = (uint8_t) j;
+                    frac = (uint8_t) f;
                     byte report_message[5] = {4, SONAR_DISTANCE, sonars[last_sonar_visited].trigger_pin,
-                                             integ, frac};
+                                              integ, frac
+                    };
                     client.write(report_message, 5);
                 }
                 last_sonar_visited++;
@@ -910,7 +1132,8 @@ void scan_imu() {
     // Values reported as ax, ay, az, gx, gy, gz
 
     byte report_message[20] = {19, IMU_REPORT, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                               0, 0, 0};
+                               0, 0, 0
+    };
 
 
     if (imu_enabled) {
@@ -1004,27 +1227,21 @@ void setup() {
 
     Serial.begin(115200);
 
-
-    //delay(1000);
-
     WiFi.begin(ssid, password);
 
-    delay(100);
+    // delay(100);
 
     pinMode(LED_BUILTIN, OUTPUT);
     pinMode(LEDR, OUTPUT);
     pinMode(LEDG, OUTPUT);
     pinMode(LEDB, OUTPUT);
 
-    digitalWrite(LEDR, LOW); //RED
+    digitalWrite(LEDR, HIGH); //RED
 
     digitalWrite(LEDG, LOW); //GREEN
 
     digitalWrite(LEDB, LOW); //BLUE
 
-
-    // turn on LED
-    digitalWrite(LED_BUILTIN, HIGH);
 
     Serial.print("\n\nAllow 15 seconds for connection to complete..");
 
@@ -1035,15 +1252,13 @@ void setup() {
     wifiServer.begin();
     Serial.println();
 
-    // Flash LED 3 Times
-    digitalWrite(LED_BUILTIN, HIGH);
-
     Serial.print("Connected to WiFi. IP Address: ");
     Serial.print(WiFi.localIP());
 
     Serial.print("  IP Port: ");
     Serial.println(PORT);
-    digitalWrite(LED_BUILTIN, LOW);
+    digitalWrite(LEDR, LOW); // RED
+    digitalWrite(LEDG, HIGH);
 
 
     // create an array of pin_descriptors for 100 pins
@@ -1071,34 +1286,36 @@ void setup() {
     } else {
         microphone_error = false;
     }
-
-
 }
 
 void loop() {
 
-    client = wifiServer.available();
+    if (!rebooting) {
 
-    if (client) {
-        Serial.print("Client Connected to address: ");
-        Serial.println(client.remoteIP());
+        client = wifiServer.available();
 
-        while (client.connected()) {
-            delay(1);
-            {
-                // keep processing incoming commands
-                get_next_command();
+        if (client) {
+            Serial.print("Client Connected to address: ");
+            Serial.println(client.remoteIP());
 
-                if (!stop_reports) { // stop reporting
-                    scan_digital_inputs();
-                    scan_analog_inputs();
-                    scan_sonars();
-                    scan_imu();
-                    scan_microphone();
+            while (client.connected()) {
+                delay(1);
+                {
+                    // keep processing incoming commands
+                    get_next_command();
+
+                    if (!stop_reports) { // stop reporting
+                        scan_digital_inputs();
+                        scan_analog_inputs();
+                        scan_sonars();
+                        scan_imu();
+                        scan_microphone();
+                        scan_dhts();
+                    }
                 }
             }
+            client.stop();
+            Serial.println("Client disconnected");
         }
-        client.stop();
-        Serial.println("Client disconnected");
     }
 }
