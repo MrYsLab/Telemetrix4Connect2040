@@ -1230,7 +1230,7 @@ void setup() {
 
     WiFi.begin(ssid, password);
 
-    // delay(100);
+    delay(100);
 
     pinMode(LED_BUILTIN, OUTPUT);
     pinMode(LEDR, OUTPUT);
