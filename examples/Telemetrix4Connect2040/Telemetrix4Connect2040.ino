@@ -787,7 +787,7 @@ void write_blocking_spi() {
     int num_bytes = command_buffer[0];
 
     for (int i = 0; i < num_bytes; i++) {
-        SPI.transfer(command_buffer[1 + i] );
+        SPI.transfer(command_buffer[1 + i]);
     }
 }
 
@@ -814,7 +814,7 @@ void read_blocking_spi() {
 
     // now read the specified number of bytes and place
     // them in the report buffer
-    for (int i = 0; i < command_buffer[0] ; i++) {
+    for (int i = 0; i < command_buffer[0]; i++) {
         spi_report_message[i + 4] = SPI.transfer(0x00);
     }
     client.write(spi_report_message, command_buffer[0] + 4);
@@ -843,6 +843,7 @@ void spi_cs_control() {
     int cs_state = command_buffer[1];
     digitalWrite(cs_pin, cs_state);
 }
+
 void dht_new() {
     if (dht_index < MAX_DHTS) {
         dhts[dht_index].dht_sensor = new DHTNEW(command_buffer[0]);
