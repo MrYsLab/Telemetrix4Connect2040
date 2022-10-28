@@ -246,7 +246,7 @@ command_descriptor command_table[] =
 // firmware version - update this when bumping the version
 #define FIRMWARE_MAJOR 1
 #define FIRMWARE_MINOR 0
-#define FIRMWARE_PATCH 1
+#define FIRMWARE_PATCH 2
 
 // A buffer to hold i2c report data
 byte i2c_report_message[64];
@@ -951,7 +951,6 @@ void scan_analog_inputs() {
 
     byte report_message[5] = {4, ANALOG_REPORT, 0, 0, 0};
 
-    uint8_t adjusted_pin_number;
     int differential;
 
     current_millis = millis();
@@ -1023,8 +1022,6 @@ void scan_dhts() {
     byte report_message[10] = {9, DHT_REPORT, DHT_DATA, 0, 0, 0, 0, 0, 0, 0};
 
     int rv;
-
-    float humidity, temperature;
 
     // are there any dhts to read?
     if (dht_index) {
@@ -1206,7 +1203,7 @@ void scan_imu() {
 void scan_microphone() {
 
     short data;
-    byte report_message[4] = {3, MICROPHONE_REPORT, 0, 0,};
+
     if (microphone_enabled) {
         byte report_message[4] = {3, MICROPHONE_REPORT, 0, 0,};
 
